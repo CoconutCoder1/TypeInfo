@@ -3,25 +3,14 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <functional>
 
 namespace re {
 
 using TypeIndex = uint16_t;
 
-struct TypeInfo
-{
-	TypeInfo(const std::string& className, uint32_t typeSize, TypeIndex typeIndex, TypeIndex parentTypeIndex)
-		: className(className), typeSize(typeSize), typeIndex(typeIndex), parentTypeIndex(parentTypeIndex)
-	{
-	}
-
-	const std::string className;
-	const uint32_t typeSize;
-	const TypeIndex typeIndex;
-	const TypeIndex parentTypeIndex;
-	std::shared_ptr<TypeInfo> parentType;
-	std::vector<std::shared_ptr<TypeInfo>> childTypes;
-};
+class TypeInfo;
+class Object;
 
 namespace typeinfo {
 
@@ -32,10 +21,12 @@ void dbgWriteTypeTreeToFile(std::ostream& outputStream);
 std::string dbgGetTypeHierarchy(const TypeInfo* typeInfo);
 #endif
 
+using CreateFn = std::function<std::shared_ptr<Object>()>;
+
 namespace detail {
 
 extern TypeIndex globalTypeIndex;
-std::shared_ptr<TypeInfo> createTypeInfo(const std::string& className, uint32_t typeSize, TypeIndex typeIndex, TypeIndex parentTypeIndex);
+std::shared_ptr<TypeInfo> createTypeInfo(const std::string& className, uint32_t typeSize, TypeIndex typeIndex, TypeIndex parentTypeIndex, CreateFn createFn);
 
 template<class T>
 TypeIndex getTypeIndex()
@@ -62,6 +53,21 @@ std::string getTypeName()
 	return fixupTypeName(typeName);
 }
 
+template<class T>
+std::shared_ptr<Object> createTypeProxy()
+{
+	requires { std::is_base_of_v<Object, T>; };
+
+	if constexpr (std::is_abstract_v<T> || !std::is_default_constructible_v<T>)
+	{
+		return nullptr;
+	}
+	else
+	{
+		return std::make_shared<T>();
+	}
+}
+
 template<class Base, class Derived>
 std::shared_ptr<TypeInfo> getTypeInfo()
 {
@@ -72,7 +78,8 @@ std::shared_ptr<TypeInfo> getTypeInfo()
 			"None",
 			0,
 			getTypeIndex<Derived>(),
-			getTypeIndex<Base>()
+			getTypeIndex<Base>(),
+			nullptr
 		);
 
 		return typeInfo;
@@ -83,7 +90,8 @@ std::shared_ptr<TypeInfo> getTypeInfo()
 			getTypeName<Derived>(),
 			sizeof(Derived),
 			getTypeIndex<Derived>(),
-			getTypeIndex<Base>()
+			getTypeIndex<Base>(),
+			&createTypeProxy<Derived>
 		);
 
 		return typeInfo;
@@ -117,6 +125,15 @@ const TypeInfo* getTypeInfo()
 	return detail::getTypeInfo<Type::ParentType, Type>().get();
 }
 
+template<class Type>
+TypeIndex getTypeIndex()
+{
+	return getTypeInfo<Type>()->typeIndex;
+}
+
+// Get type info from its type index.
+const TypeInfo* getTypeByIndex(TypeIndex typeIndex);
+
 // All types inherit from the "none" type if not from Object.
 const TypeInfo* getNoneType();
 
@@ -124,4 +141,37 @@ const TypeInfo* getNoneType();
 bool isNoneType(const TypeInfo* typeInfo);
 
 }
+
+// TypeInfo implementation.
+class TypeInfo
+{
+public:
+	TypeInfo(const std::string& className, uint32_t typeSize, TypeIndex typeIndex, TypeIndex parentTypeIndex, typeinfo::CreateFn createFn)
+		: className(className), typeSize(typeSize), typeIndex(typeIndex), parentTypeIndex(parentTypeIndex), createFn(createFn)
+	{
+	}
+
+	const std::string className;
+	const uint32_t typeSize;
+	const TypeIndex typeIndex;
+	const TypeIndex parentTypeIndex;
+	const typeinfo::CreateFn createFn;
+	std::shared_ptr<TypeInfo> parentType;
+	std::vector<std::shared_ptr<TypeInfo>> childTypes;
+
+	bool isBaseOf(TypeIndex typeIndex) const;
+	bool isNoneType() const;
+
+	template<class Type>
+	bool isBaseOf() const
+	{
+		return isBaseOf(typeinfo::getTypeInfo<Type>()->typeIndex);
+	}
+
+	template<class FromType>
+	bool isDerived() const
+	{
+		return isBaseOf<FromType>();
+	}
+};
 }

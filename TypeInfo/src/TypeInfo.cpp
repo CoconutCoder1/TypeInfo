@@ -4,7 +4,28 @@
 
 #include <fstream>
 
-namespace re::typeinfo {
+namespace re {
+
+bool TypeInfo::isBaseOf(TypeIndex typeIndex) const
+{
+	const TypeInfo* typeInfoPtr = this;
+
+	while (typeInfoPtr && !typeInfoPtr->isNoneType())
+	{
+		if (typeInfoPtr->typeIndex == typeIndex)
+			return true;
+
+		typeInfoPtr = typeInfoPtr->parentType.get();
+	}
+	return false;
+}
+
+bool TypeInfo::isNoneType() const
+{
+	return this == typeinfo::getNoneType();
+}
+
+namespace typeinfo {
 namespace detail {
 // Variable for keeping track of the next type's index.
 // This also acts as a type count variable.
@@ -27,15 +48,15 @@ SetupHelper<void, void> VoidSetupHelper::voidSetupHelper;
 static std::vector<std::shared_ptr<TypeInfo>>& getTypeInfoDatabase()
 {
 	static std::vector<std::shared_ptr<TypeInfo>> typeInfoDatabase(UINT16_MAX, nullptr);
-	
+
 	return typeInfoDatabase;
 }
 
 // Allocates a shared pointer to type info then adds it to the type info list.
-std::shared_ptr<TypeInfo> createTypeInfo(const std::string& className, uint32_t typeSize, TypeIndex typeIndex, TypeIndex parentTypeIndex)
+std::shared_ptr<TypeInfo> createTypeInfo(const std::string& className, uint32_t typeSize, TypeIndex typeIndex, TypeIndex parentTypeIndex, CreateFn createFn)
 {
 	auto& typeInfoDB = getTypeInfoDatabase();
-	typeInfoDB[typeIndex] = std::make_shared<TypeInfo>(className, typeSize, typeIndex, parentTypeIndex);
+	typeInfoDB[typeIndex] = std::make_shared<TypeInfo>(className, typeSize, typeIndex, parentTypeIndex, createFn);
 
 	return typeInfoDB[typeIndex];
 }
@@ -44,11 +65,12 @@ std::string fixupTypeName(const char* typeName)
 {
 	std::string typeNameStr = typeName;
 
-	size_t scopeSep = typeNameStr.find("::");
-	while (scopeSep != std::string::npos)
+	// Replace "::" with "."
+	size_t replacePos = typeNameStr.find("::");
+	while (replacePos != std::string::npos)
 	{
-		typeNameStr = typeNameStr.replace(scopeSep, 2, ".");
-		scopeSep = typeNameStr.find("::");
+		typeNameStr = typeNameStr.replace(replacePos, 2, ".");
+		replacePos = typeNameStr.find("::");
 	}
 
 	return typeNameStr;
@@ -91,6 +113,17 @@ const TypeInfo* getNoneType()
 	return detail::getTypeInfo<void, void>().get();
 }
 
+const TypeInfo* getTypeByIndex(TypeIndex typeIndex)
+{
+	auto& typeInfoDB = detail::getTypeInfoDatabase();
+
+	// Return nullptr if the type index exceeds the amount of types registered.
+	if (typeIndex >= detail::globalTypeIndex)
+		return nullptr;
+
+	return typeInfoDB[typeIndex].get();
+}
+
 bool isNoneType(const TypeInfo* typeInfo)
 {
 	return false;
@@ -103,7 +136,7 @@ void dbgPrintType(std::ostream& outputStream, const TypeInfo* typeInfo, int dept
 	for (int i = 0; i < depth; i++)
 		outputStream << '\t';
 
-	outputStream << typeInfo->className << ": " << std::hex << typeInfo->typeSize << "\n";
+	outputStream << typeInfo->className << ": 0x" << std::hex << typeInfo->typeSize << "\n";
 
 	for (const auto& child : typeInfo->childTypes)
 	{
@@ -116,7 +149,10 @@ void dbgWriteTypeTreeToFile(std::ostream& outputStream)
 {
 	const TypeInfo* rootPtr = getNoneType();
 
-	dbgPrintType(outputStream, rootPtr, 0);
+	for (const auto& child : rootPtr->childTypes)
+	{
+		dbgPrintType(outputStream, child.get(), 0);
+	}
 }
 
 // Returns a string showing the hierarchy tree of a type.
@@ -128,15 +164,18 @@ std::string dbgGetTypeHierarchy(const TypeInfo* typeInfo)
 	while (typeInfo)
 	{
 		result.insert(0, typeInfo->className);
-		
+
 		typeInfo = typeInfo->parentType.get();
 
-		if (typeInfo)
+		if (typeInfo && typeInfo != getNoneType())
 			result.insert(0, " -> ");
+		else
+			break;
 	}
 
 	return result;
 }
 #endif
 
+}
 }
